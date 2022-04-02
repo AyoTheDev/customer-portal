@@ -1,73 +1,86 @@
-# Java Maven CircleCI 2.0 configuration file
+Version: 2
 #
-# Check https://circleci.com/docs/2.0/language-java/ for more details
+# Jobs are a collection of Steps. All of the steps in the job are executed in a single unit which consumes a CircleCI container from your plan while it’s running.
+# Job: "maven-build" job test and package demo application with Maven, persist JAR in workspace and store it as Artefacts
+# Job: "aws-deploy" job get binary from attached workspace and deploy to AWS
+# https://circleci.com/docs/2.0/jobs-steps/
 #
-version: '2.1'
-orbs:
-  aws-s3: circleci/aws-s3@3.0
 jobs:
-  test:
+  # Job to Build Maven application
+  maven-build:
+
+    # specify the version you desire here
     docker:
-      # specify the version you desire here
-      - image: circleci/openjdk:8-jdk
-      
-      # Specify service dependencies here if necessary
-      # CircleCI maintains a library of pre-built images
-      # documented at https://circleci.com/docs/2.0/circleci-images/
-      # - image: circleci/postgres:9.4
+      - image: maven
 
     working_directory: ~/repo
 
     environment:
       # Customize the JVM maximum heap limit
       MAVEN_OPTS: -Xmx3200m
-    
+
     steps:
+
       - checkout
 
       # Download and cache dependencies
       - restore_cache:
-          keys:
-            - v1-dependencies-{{ checksum "pom.xml" }}
-            # fallback to using the latest cache if no exact match is found
-            - v1-dependencies-
+          key: demo-{{ checksum "pom.xml" }}
 
-      # store the version denoted by the POM onto the env
-      - run: mkdir -p target
       - run: mvn dependency:go-offline
-      - run: mvn org.apache.maven.plugins:maven-help-plugin:2.1.1:evaluate -Dexpression=project.version | grep -Ev '(^\[|Download)' > target/version.txt
 
       - save_cache:
           paths:
             - ~/.m2
-          key: v1-dependencies-{{ checksum "pom.xml" }}
+          key: demo-{{ checksum "pom.xml" }}
 
+      # Run maven commands
       - run: mvn package
-      - persist_to_workspace:
-          root: target
-          paths:
-            - customer-portal.jar
-            - version.txt
 
-  deploy:
+      # Store tests to compare builds
+      - store_test_results:
+          path: target/surefire-reports
+      # Store artifacts on CircleCI internal repository
+      - store_artifacts:
+          path: target/demo-1.0.jar
+
+      # Persist the specified paths target/demo-1.0.jar) into the workspace for use in aws-deploy job.
+      - persist_to_workspace:
+          # Must be an absolute path, or relative path from working_directory. This is a directory on the container which is taken to be the root directory of the workspace.
+          root: ~/repo/target
+          # Must be relative path from root
+          paths:
+            - demo-1.0.jar
+
+  # Job to Deploy spring-boot demo application to AWS BeanStalk
+  aws-deploy:
+    working_directory: ~/app
     docker:
-      - image: circleci/python:2.7
+      - image: chriscamicas/awscli-awsebcli
     steps:
       - attach_workspace:
-          at: /tmp/workspace
+          # Must be absolute path or relative path from working_directory
+          at: ~/app/target
 
-      - run: sudo pip install awscli
-
-      - run: |
-          export PROJECT_VERSION=$(cat /tmp/workspace/version.txt)
-          aws s3 cp /tmp/workspace/customer-portal.jar s3://elasticbeanstalk-eu-west-2-487484241999/${PROJECT_VERSION}/customer-portal.jar --region eu-west-2
-          aws elasticbeanstalk create-application-version --application-name customer-portal --version-label ${PROJECT_VERSION} --source-bundle S3Bucket="elasticbeanstalk-eu-west-2-487484241999",S3Key="${PROJECT_VERSION}/customer-portal.jar" --region eu-west-2
-
+      - run:
+          name: Deploying
+          command: |
+            echo "$AWS_ACCESS_KEY_ID"
+            eb init continuous-deployment-demo -p "64bit Amazon Linux 2017.09 v2.6.4 running Java 8" --region "ca-central-1"
+            eb create circleci-env --single || true
+            eb setenv SERVER_PORT=5000
+            eb deploy circleci-env
+            eb status
+#
+# Workflows: A workflow is a set of rules for defining a collection of jobs and their run order.
+# In this demo, "aws-deploy" jobs is triggered only after the success of "maven-build" jobs
+# see https://circleci.com/docs/2.0/workflows/
+#
 workflows:
   version: 2
-  wf1:
+  workflow:
     jobs:
-      - test
-      - deploy:
+      - maven-build
+      - aws-deploy:
           requires:
-            - test
+            - maven-build
