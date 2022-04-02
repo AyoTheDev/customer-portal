@@ -42,16 +42,17 @@ jobs:
 
       - run: mvn package
       - persist_to_workspace:
-          root: ~/
+          root: target
           paths:
-            - project/build
+            - customer-portal.jar
+            - version.txt
 
   deploy:
     docker:
       - image: circleci/python:2.7
     steps:
       - attach_workspace:
-          at: ~/
+          at: /tmp/workspace
 
       - run: sudo pip install awscli
 
